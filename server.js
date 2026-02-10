@@ -106,14 +106,14 @@ app.use(
       includeSubDomains: true,
       preload: true,
     },
-  })
+  }),
 );
 app.use(cors());
 app.use(compression());
 app.use(
   morgan("combined", {
     stream: { write: (message) => logger.info(message.trim()) },
-  })
+  }),
 );
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
@@ -206,10 +206,10 @@ app.post(
         backupConfig.storage === "local"
           ? "local"
           : backupConfig.storage === "remote" && isS3Configured()
-          ? "remote"
-          : backupConfig.storage === "both" && isS3Configured()
-          ? "both"
-          : "local";
+            ? "remote"
+            : backupConfig.storage === "both" && isS3Configured()
+              ? "both"
+              : "local";
 
       res.status(201).json({
         success: true,
@@ -226,7 +226,7 @@ app.post(
         message: error.message,
       });
     }
-  }
+  },
 );
 
 /**
@@ -288,7 +288,7 @@ app.delete(
         message: error.message,
       });
     }
-  }
+  },
 );
 
 /**
@@ -348,7 +348,7 @@ app.get("/api/backups/:filename/download", async (req, res) => {
       // Clean up temp file if downloaded from S3
       if (filepath.startsWith(os.tmpdir())) {
         fs.unlink(filepath).catch((err) =>
-          logger.error("Failed to clean up temp file", err)
+          logger.error("Failed to clean up temp file", err),
         );
       }
     });
@@ -397,7 +397,7 @@ app.post("/api/restore", strictLimiter, validateRestore, async (req, res) => {
         // Download to temporary location instead of permanent local storage
         const tempPath = path.join(
           os.tmpdir(),
-          `restore_${Date.now()}_${safeFilename}`
+          `restore_${Date.now()}_${safeFilename}`,
         );
         await downloadFromS3(safeFilename, tempPath);
         localPath = tempPath;
@@ -512,7 +512,7 @@ app.post(
         message: error.message,
       });
     }
-  }
+  },
 );
 
 /**
@@ -561,6 +561,7 @@ app.get("/api/config/mode", (req, res) => {
             database: dbConfig.database,
             schema: dbConfig.schema || "",
             excludeTables: dbConfig.excludeTables || [],
+            sslMode: dbConfig.sslMode || "off",
           },
           backup: {
             enabled: backupConfig.enabled,
@@ -668,8 +669,16 @@ app.post(
   validateManualDatabaseConfig,
   async (req, res) => {
     try {
-      const { host, port, user, password, database, schema, excludeTables } =
-        req.body;
+      const {
+        host,
+        port,
+        user,
+        password,
+        database,
+        schema,
+        excludeTables,
+        sslMode,
+      } = req.body;
 
       if (!host || !port || !user || !password || !database) {
         return res.status(400).json({
@@ -686,6 +695,7 @@ app.post(
         database,
         schema,
         excludeTables,
+        sslMode,
       });
 
       // Reset connection pool to use new config
@@ -702,6 +712,7 @@ app.post(
           database: config.database,
           schema: config.schema,
           excludeTables: config.excludeTables,
+          sslMode: config.sslMode,
         },
       });
     } catch (error) {
@@ -711,7 +722,7 @@ app.post(
         message: error.message,
       });
     }
-  }
+  },
 );
 
 /**
@@ -747,7 +758,7 @@ app.post(
         message: error.message,
       });
     }
-  }
+  },
 );
 
 /**
@@ -797,7 +808,7 @@ app.post(
         message: error.message,
       });
     }
-  }
+  },
 );
 
 // ==================== STORAGE CONFIG ENDPOINTS ====================

@@ -29,8 +29,8 @@ function showToast(type, title, message) {
     type === "success"
       ? '<path d="M12 2C6.5 2 2 6.5 2 12S6.5 22 12 22 22 17.5 22 12 17.5 2 12 2M10 17L5 12L6.41 10.59L10 14.17L17.59 6.58L19 8L10 17Z" />'
       : type === "error"
-      ? '<path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" />'
-      : '<path d="M13,9H11V7H13M13,17H11V11H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" />';
+        ? '<path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" />'
+        : '<path d="M13,9H11V7H13M13,17H11V11H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" />';
 
   toast.innerHTML = `
     <svg class="toast-icon" viewBox="0 0 24 24" fill="currentColor">${icon}</svg>
@@ -139,7 +139,7 @@ function updateStatistics(stats) {
   document.getElementById("stat-local").textContent = stats.local;
   document.getElementById("stat-remote").textContent = stats.remote;
   document.getElementById("stat-size").textContent = formatFileSize(
-    stats.totalSize
+    stats.totalSize,
   );
 }
 
@@ -172,8 +172,8 @@ function renderBackupsTable() {
         backup.location === "local"
           ? "location-local"
           : backup.location === "remote"
-          ? "location-remote"
-          : "location-both";
+            ? "location-remote"
+            : "location-both";
       const locationText =
         backup.location === "both"
           ? "Local & Remote"
@@ -295,7 +295,7 @@ async function createBackup() {
  */
 function downloadBackup(filename) {
   window.location.href = `/api/backups/${encodeURIComponent(
-    filename
+    filename,
   )}/download`;
 }
 
@@ -344,11 +344,17 @@ function populateFormFromConfig(config) {
     document.getElementById("input-db-name").value = db.database || "";
     document.getElementById("input-schema").value = db.schema || "";
     document.getElementById("input-exclude-tables").value = Array.isArray(
-      db.excludeTables
+      db.excludeTables,
     )
       ? db.excludeTables.join(", ")
       : db.excludeTables || "";
     document.getElementById("input-db-password").value = db.password || "";
+    const sslCheckbox = document.getElementById("input-ssl-mode");
+    const sslBadge = document.getElementById("ssl-mode-status");
+    sslCheckbox.checked = db.sslMode === "on";
+    sslBadge.textContent = db.sslMode === "on" ? "ON" : "OFF";
+    sslBadge.className =
+      "config-mode-badge " + (db.sslMode === "on" ? "manual" : "env");
   }
 
   // Backup fields
@@ -376,7 +382,7 @@ function populateFormFromConfig(config) {
 
     // Show force path style status (auto-detected or manual)
     const forcePathStyleCheckbox = document.getElementById(
-      "input-force-path-style"
+      "input-force-path-style",
     );
     forcePathStyleCheckbox.checked = s3.s3ForcePathStyle || false;
 
@@ -426,6 +432,10 @@ function clearFormFields() {
   document.getElementById("input-db-password").value = "";
   document.getElementById("input-schema").value = "";
   document.getElementById("input-exclude-tables").value = "";
+  document.getElementById("input-ssl-mode").checked = false;
+  document.getElementById("ssl-mode-status").textContent = "OFF";
+  document.getElementById("ssl-mode-status").className =
+    "config-mode-badge env";
 
   // Backup fields
   document.getElementById("input-backup-format").value = "sql";
@@ -467,14 +477,14 @@ async function toggleConfigMode(isManual) {
     showToast(
       "success",
       "Success",
-      `Configuration mode changed to ${mode.toUpperCase()}`
+      `Configuration mode changed to ${mode.toUpperCase()}`,
     );
   } catch (error) {
     console.error("Error toggling config mode:", error);
     showToast(
       "error",
       "Error",
-      "Failed to change config mode: " + error.message
+      "Failed to change config mode: " + error.message,
     );
     // Revert toggle
     document.getElementById("config-mode-switch").checked =
@@ -513,7 +523,7 @@ function updateUIForConfigMode() {
   const allInputs = document.querySelectorAll(
     "#tab-database input, #tab-database select, " +
       "#tab-backup input, #tab-backup select, " +
-      "#tab-storage input, #tab-storage select"
+      "#tab-storage input, #tab-storage select",
   );
 
   allInputs.forEach((input) => {
@@ -571,6 +581,7 @@ async function saveManualDatabaseConfig() {
     password: document.getElementById("input-db-password").value,
     schema: document.getElementById("input-schema").value.trim() || null,
     excludeTables: document.getElementById("input-exclude-tables").value.trim(),
+    sslMode: document.getElementById("input-ssl-mode").checked ? "on" : "off",
   };
 
   try {
@@ -585,7 +596,7 @@ async function saveManualDatabaseConfig() {
     showToast(
       "error",
       "Error",
-      "Failed to save database config: " + error.message
+      "Failed to save database config: " + error.message,
     );
   }
 }
@@ -615,7 +626,7 @@ async function saveManualBackupConfig() {
     showToast(
       "error",
       "Error",
-      "Failed to save backup config: " + error.message
+      "Failed to save backup config: " + error.message,
     );
   }
 }
@@ -653,7 +664,7 @@ async function saveManualS3Config() {
 async function resetManualConfig() {
   if (
     !confirm(
-      "Are you sure you want to reset all manual configuration? This will clear all saved settings (Database, Backup, and S3 configuration)."
+      "Are you sure you want to reset all manual configuration? This will clear all saved settings (Database, Backup, and S3 configuration).",
     )
   ) {
     return;
@@ -681,7 +692,7 @@ async function resetManualConfig() {
 async function restoreBackup(filename) {
   if (
     !confirm(
-      `Are you sure you want to restore the database from "${filename}"? This will overwrite all current data.`
+      `Are you sure you want to restore the database from "${filename}"? This will overwrite all current data.`,
     )
   ) {
     return;
@@ -719,7 +730,7 @@ async function deleteBackup(filename) {
       `/api/backups/${encodeURIComponent(filename)}`,
       {
         method: "DELETE",
-      }
+      },
     );
 
     showToast("success", "Success", data.message);
@@ -830,6 +841,17 @@ document.addEventListener("DOMContentLoaded", () => {
   if (configModeToggle) {
     configModeToggle.addEventListener("change", (e) => {
       toggleConfigMode(e.target.checked);
+    });
+  }
+
+  // SSL mode toggle - update badge on change
+  const sslToggle = document.getElementById("input-ssl-mode");
+  if (sslToggle) {
+    sslToggle.addEventListener("change", (e) => {
+      const badge = document.getElementById("ssl-mode-status");
+      badge.textContent = e.target.checked ? "ON" : "OFF";
+      badge.className =
+        "config-mode-badge " + (e.target.checked ? "manual" : "env");
     });
   }
 
