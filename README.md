@@ -12,9 +12,11 @@ A production-ready web application for managing PostgreSQL database backups with
 ### Core Features
 
 - 📦 **Database Backup & Restore** - Create and restore PostgreSQL backups using native `pg_dump` and `psql` commands
+- 📤 **Upload & Restore Any Backup File** - Upload `.sql` or `.dump` files manually, then restore on demand from UI
 - 🗄️ **Local Storage** - Save backups to local filesystem with persistent storage
 - ☁️ **S3-Compatible Storage** - Upload backups to AWS S3, Supabase S3, MinIO, DigitalOcean Spaces, Backblaze B2, and more
 - 📊 **Statistics Dashboard** - View total backups, storage locations, and total size at a glance
+- 📜 **Detailed Operation Timeline** - View operation-wise logs (backup/restore/upload), including table and sequence level steps
 - ⚙️ **Dual Configuration Modes** - Choose between ENV (environment variables) or Manual (runtime) configuration modes
 - 🔧 **Runtime Configuration** - Change database connection settings without restarting the application
 - 🔐 **SSL Auto-Detection** - Automatically detect local vs remote databases and configure SSL mode accordingly
@@ -285,8 +287,11 @@ Use the `POST /api/config/mode` endpoint to switch between modes at runtime.
 
 - `GET /api/backups` - List all backups with statistics
 - `POST /api/backups` - Create new backup
+- `POST /api/backups/upload` - Upload backup file (`multipart/form-data`, field: `backupFile`)
 - `DELETE /api/backups/:filename` - Delete backup
 - `GET /api/backups/:filename/download` - Download backup file
+- `GET /api/operations` - List grouped operation logs with step lines
+- `DELETE /api/operations` - Clear operation logs
 
 ### Restore
 
@@ -403,6 +408,12 @@ Use the `POST /api/config/mode` endpoint to switch between modes at runtime.
 4. Wait for the restore to complete
 
 ⚠️ **Warning**: Restoring a backup will overwrite all current database data!
+
+### Uploading External Backup Files
+
+1. Click **"Upload Backup File"**
+2. Select a `.sql` or `.dump` file from your computer
+3. Wait for upload success, then restore it from the backup table when needed
 
 ### Deleting a Backup
 

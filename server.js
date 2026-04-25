@@ -5,6 +5,7 @@ import rateLimit from "express-rate-limit";
 import fs from "fs/promises";
 import helmet from "helmet";
 import morgan from "morgan";
+import multer from "multer";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -13,6 +14,7 @@ import { fileURLToPath } from "url";
 import {
   createBackup,
   deleteLocalBackup,
+  ensureBackupDir,
   getLocalBackupPath,
   restoreBackup,
 } from "./lib/backup.js";
@@ -32,6 +34,15 @@ import {
 } from "./lib/config.js";
 import { resetPool, testConnection } from "./lib/database.js";
 import logger from "./lib/logger.js";
+import {
+  addOperationStep,
+  clearOperationLogs,
+  completeOperation,
+  failOperation,
+  getGroupedOperationLogs,
+  initializeOperationLogs,
+  startOperation,
+} from "./lib/operation-log.js";
 import {
   getSchedulerStatus,
   initializeScheduler,
@@ -56,6 +67,7 @@ import {
   validateRestore,
   validateS3Config,
   validateScheduler,
+  sanitizeFilename,
 } from "./lib/validation.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -63,6 +75,20 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 7050;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 1024 * 1024 * 1024, // 1GB
+  },
+  fileFilter: (_req, file, cb) => {
+    const lowerName = file.originalname.toLowerCase();
+    if (lowerName.endsWith(".sql") || lowerName.endsWith(".dump")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only .sql and .dump backup files are allowed"));
+    }
+  },
+});
 
 // Rate limiting configuration
 const limiter = rateLimit({
@@ -177,6 +203,47 @@ app.get("/api/backups", async (req, res) => {
 });
 
 /**
+ * GET /api/operations - List operation logs
+ */
+app.get("/api/operations", (req, res) => {
+  try {
+    const operations = getGroupedOperationLogs(
+      req.query.limit,
+      req.query.stepsPerOperation,
+    );
+    res.json({
+      success: true,
+      operations,
+    });
+  } catch (error) {
+    logger.error("Error listing operation logs", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * DELETE /api/operations - Clear all operation logs
+ */
+app.delete("/api/operations", strictLimiter, async (req, res) => {
+  try {
+    await clearOperationLogs();
+    res.json({
+      success: true,
+      message: "Operation logs cleared",
+    });
+  } catch (error) {
+    logger.error("Error clearing operation logs", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+/**
  * POST /api/backups - Create new backup
  */
 app.post(
@@ -184,13 +251,56 @@ app.post(
   strictLimiter,
   validateCreateBackup,
   async (req, res) => {
+    let operationId = null;
+    let requestedFormat = null;
     try {
       const backupConfig = getBackupConfig();
       const { format } = req.body; // Get format from request body
+      requestedFormat = format || backupConfig.format || "sql";
+      operationId = startOperation("backup");
+      addOperationStep({
+        operationId,
+        type: "backup",
+        status: "in_progress",
+        step: "Creating backup file",
+        details: `Requested format: ${requestedFormat}`,
+      });
 
       // Create backup with specified format
       const result = await createBackup(format);
       logger.info(`Backup created: ${result.filename} (${result.size} bytes)`);
+      addOperationStep({
+        operationId,
+        type: "backup",
+        filename: result.filename,
+        status: "success",
+        step: "Backup file created",
+        details: `${result.size} bytes, format: ${result.format}`,
+      });
+      if (result.details?.tables?.length) {
+        result.details.tables.forEach((tableName) => {
+          addOperationStep({
+            operationId,
+            type: "backup",
+            filename: result.filename,
+            status: "info",
+            step: "Table backed up",
+            details: tableName,
+          });
+        });
+      }
+      if (result.details?.sequences?.length) {
+        result.details.sequences.forEach((sequenceName) => {
+          addOperationStep({
+            operationId,
+            type: "backup",
+            filename: result.filename,
+            status: "info",
+            step: "Sequence backed up",
+            details: sequenceName,
+          });
+        });
+      }
 
       // Upload to S3 if configured
       if (
@@ -198,8 +308,22 @@ app.post(
           backupConfig.storage === "both") &&
         isS3Configured()
       ) {
+        addOperationStep({
+          operationId,
+          type: "backup",
+          filename: result.filename,
+          status: "in_progress",
+          step: "Uploading backup to S3",
+        });
         await uploadToS3(result.path, result.filename);
         logger.info(`Backup uploaded to S3: ${result.filename}`);
+        addOperationStep({
+          operationId,
+          type: "backup",
+          filename: result.filename,
+          status: "success",
+          step: "Backup uploaded to S3",
+        });
       }
 
       const location =
@@ -219,8 +343,99 @@ app.post(
         format: result.format,
         location,
       });
+      completeOperation({
+        operationId,
+        type: "backup",
+        filename: result.filename,
+        step: `Backup completed (${location})`,
+      });
     } catch (error) {
       logger.error("Error creating backup", error);
+      if (operationId) {
+        failOperation({
+          operationId,
+          type: "backup",
+          step: "Backup failed",
+          errorMessage: error.message,
+        });
+      }
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  },
+);
+
+/**
+ * POST /api/backups/upload - Upload backup file
+ */
+app.post(
+  "/api/backups/upload",
+  strictLimiter,
+  upload.single("backupFile"),
+  async (req, res) => {
+    let operationId = null;
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: "Backup file is required",
+        });
+      }
+
+      operationId = startOperation("upload");
+      addOperationStep({
+        operationId,
+        type: "upload",
+        status: "in_progress",
+        step: "Validating uploaded file",
+        details: req.file.originalname,
+      });
+
+      const sanitizedOriginal = sanitizeFilename(req.file.originalname);
+      const extension = sanitizedOriginal.toLowerCase().endsWith(".dump")
+        ? "dump"
+        : "sql";
+      const baseName = sanitizedOriginal.replace(/\.(sql|dump)$/i, "");
+      const finalName = `${baseName || "uploaded_backup"}_${Date.now()}.${extension}`;
+      await ensureBackupDir();
+      const backupPath = getLocalBackupPath(finalName);
+
+      await fs.writeFile(backupPath, req.file.buffer);
+
+      addOperationStep({
+        operationId,
+        type: "upload",
+        filename: finalName,
+        status: "success",
+        step: "Backup file uploaded to local storage",
+        details: `${req.file.size} bytes`,
+      });
+
+      completeOperation({
+        operationId,
+        type: "upload",
+        filename: finalName,
+        step: "Upload completed",
+      });
+
+      res.status(201).json({
+        success: true,
+        message: "Backup file uploaded successfully",
+        filename: finalName,
+        size: req.file.size,
+      });
+    } catch (error) {
+      logger.error("Error uploading backup file", error);
+      if (operationId) {
+        failOperation({
+          operationId,
+          type: "upload",
+          step: "Upload failed",
+          errorMessage: error.message,
+        });
+      }
       res.status(500).json({
         success: false,
         message: error.message,
@@ -365,6 +580,8 @@ app.get("/api/backups/:filename/download", async (req, res) => {
  * POST /api/restore - Restore database from backup
  */
 app.post("/api/restore", strictLimiter, validateRestore, async (req, res) => {
+  let operationId = null;
+  let safeFilename = null;
   try {
     const { filename } = req.body;
 
@@ -375,7 +592,15 @@ app.post("/api/restore", strictLimiter, validateRestore, async (req, res) => {
       });
     }
 
-    const safeFilename = path.basename(filename); // Prevent path traversal
+    safeFilename = path.basename(filename); // Prevent path traversal
+    operationId = startOperation("restore", safeFilename);
+    addOperationStep({
+      operationId,
+      type: "restore",
+      filename: safeFilename,
+      status: "in_progress",
+      step: "Restore request accepted",
+    });
     const backupConfig = getBackupConfig();
     let localPath = getLocalBackupPath(safeFilename);
     let isTemporaryFile = false;
@@ -394,6 +619,13 @@ app.post("/api/restore", strictLimiter, validateRestore, async (req, res) => {
       isS3Configured()
     ) {
       try {
+        addOperationStep({
+          operationId,
+          type: "restore",
+          filename: safeFilename,
+          status: "in_progress",
+          step: "Downloading backup from S3",
+        });
         // Download to temporary location instead of permanent local storage
         const tempPath = path.join(
           os.tmpdir(),
@@ -403,12 +635,38 @@ app.post("/api/restore", strictLimiter, validateRestore, async (req, res) => {
         localPath = tempPath;
         fileExists = true;
         isTemporaryFile = true;
+        addOperationStep({
+          operationId,
+          type: "restore",
+          filename: safeFilename,
+          status: "success",
+          step: "Backup downloaded from S3",
+        });
       } catch (error) {
         logger.error("Failed to download from S3", error);
+        if (operationId) {
+          addOperationStep({
+            operationId,
+            type: "restore",
+            filename: safeFilename,
+            status: "error",
+            step: "Failed to download backup from S3",
+            details: error.message,
+          });
+        }
       }
     }
 
     if (!fileExists) {
+      if (operationId) {
+        failOperation({
+          operationId,
+          type: "restore",
+          filename: safeFilename,
+          step: "Restore failed",
+          errorMessage: "Backup file not found",
+        });
+      }
       return res.status(404).json({
         success: false,
         message: "Backup file not found",
@@ -417,7 +675,47 @@ app.post("/api/restore", strictLimiter, validateRestore, async (req, res) => {
 
     // Restore backup (pass custom path if using temporary file)
     try {
-      await restoreBackup(safeFilename, isTemporaryFile ? localPath : null);
+      addOperationStep({
+        operationId,
+        type: "restore",
+        filename: safeFilename,
+        status: "in_progress",
+        step: "Restoring database",
+      });
+      const restoreResult = await restoreBackup(
+        safeFilename,
+        isTemporaryFile ? localPath : null,
+      );
+      if (restoreResult.details?.tables?.length) {
+        restoreResult.details.tables.forEach((tableName) => {
+          addOperationStep({
+            operationId,
+            type: "restore",
+            filename: safeFilename,
+            status: "info",
+            step: "Table restored",
+            details: tableName,
+          });
+        });
+      }
+      if (restoreResult.details?.sequences?.length) {
+        restoreResult.details.sequences.forEach((sequenceName) => {
+          addOperationStep({
+            operationId,
+            type: "restore",
+            filename: safeFilename,
+            status: "info",
+            step: "Sequence restored",
+            details: sequenceName,
+          });
+        });
+      }
+      completeOperation({
+        operationId,
+        type: "restore",
+        filename: safeFilename,
+        step: "Database restored successfully",
+      });
 
       res.json({
         success: true,
@@ -435,6 +733,15 @@ app.post("/api/restore", strictLimiter, validateRestore, async (req, res) => {
     }
   } catch (error) {
     logger.error("Error restoring backup", error);
+    if (operationId) {
+      failOperation({
+        operationId,
+        type: "restore",
+        filename: safeFilename,
+        step: "Restore failed",
+        errorMessage: error.message,
+      });
+    }
     res.status(500).json({
       success: false,
       message: error.message,
@@ -978,6 +1285,10 @@ app.use((err, req, res, _next) => {
 app.listen(PORT, () => {
   logger.info(`PostgreSQL Backup Manager running on http://localhost:${PORT}`);
   logger.info(`Environment: ${process.env.NODE_ENV || "development"}`);
+
+  initializeOperationLogs().catch((error) => {
+    logger.error("Failed to initialize operation logs", error);
+  });
 
   // Initialize scheduler if auto-backup is enabled
   initializeScheduler();

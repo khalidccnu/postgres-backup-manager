@@ -175,6 +175,31 @@ POST /api/backups
 }
 ```
 
+### Upload Backup File
+
+```http
+POST /api/backups/upload
+```
+
+**Content-Type:**
+
+`multipart/form-data`
+
+**Form Fields:**
+
+- `backupFile` - Required file (`.sql` or `.dump`)
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Backup file uploaded successfully",
+  "filename": "uploaded_backup_1714012345678.sql",
+  "size": 1048576
+}
+```
+
 **Response:**
 
 ```json
@@ -234,6 +259,63 @@ POST /api/restore
 ```json
 {
   "filename": "backup_mydb_2024-01-01T00-00-00-000Z.sql"
+}
+```
+
+### List Operation Logs
+
+```http
+GET /api/operations?limit=20&stepsPerOperation=500
+```
+
+**Query Parameters:**
+
+- `limit` - Max number of operations (default: 30)
+- `stepsPerOperation` - Max log lines per operation (default: 500)
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "operations": [
+    {
+      "operationId": "backup-1714012345000-1",
+      "type": "backup",
+      "filename": "backup_mydb_2024-01-01T00-00-00-000Z.sql",
+      "latestStatus": "success",
+      "latestStep": "Backup completed (local)",
+      "latestTimestamp": "2024-01-01T00:00:10.000Z",
+      "startedAt": "2024-01-01T00:00:00.000Z",
+      "steps": [
+        {
+          "id": "backup-1714012345000-1-1714012345001-ab12cd",
+          "operationId": "backup-1714012345000-1",
+          "type": "backup",
+          "filename": "backup_mydb_2024-01-01T00-00-00-000Z.sql",
+          "status": "started",
+          "step": "Operation started",
+          "details": null,
+          "timestamp": "2024-01-01T00:00:00.000Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Clear Operation Logs
+
+```http
+DELETE /api/operations
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Operation logs cleared"
 }
 ```
 

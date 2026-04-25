@@ -1,5 +1,6 @@
 // ==================== STATE MANAGEMENT ====================
 let backups = [];
+let operationGroups = [];
 let schedulerRunning = false;
 let configMode = "env"; // 'env' or 'manual'
 
@@ -14,6 +15,32 @@ function formatFileSize(bytes) {
   if (bytes < 1024 * 1024 * 1024)
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/**
+ * Format operation type for display
+ */
+function formatOperationType(type) {
+  if (type === "upload") return "Upload";
+  return type === "restore" ? "Restore" : "Backup";
+}
+
+/**
+ * Format operation status for display
+ */
+function formatOperationStatus(status) {
+  if (status === "success") return "Success";
+  if (status === "error") return "Failed";
+  if (status === "in_progress") return "In Progress";
+  if (status === "started") return "Started";
+  return "Info";
+}
+
+function formatOperationStatusClass(status) {
+  if (status === "success") return "success";
+  if (status === "error") return "failed";
+  if (status === "in_progress" || status === "started") return "active";
+  return "info";
 }
 
 /**
@@ -129,6 +156,85 @@ async function loadBackups() {
   } finally {
     hideLoading();
   }
+}
+
+/**
+ * Load operation logs
+ */
+async function loadOperationLogs() {
+  try {
+    const data = await apiRequest("/api/operations?limit=20&stepsPerOperation=500");
+    operationGroups = data.operations || [];
+    renderOperationLogs();
+  } catch (error) {
+    console.error("Error loading operation logs:", error);
+    showToast("error", "Error", "Failed to load operation logs: " + error.message);
+  }
+}
+
+async function clearOperationLogs() {
+  if (!confirm("Clear all operation logs? This cannot be undone.")) {
+    return;
+  }
+
+  try {
+    const data = await apiRequest("/api/operations", {
+      method: "DELETE",
+    });
+    showToast("success", "Success", data.message);
+    await loadOperationLogs();
+  } catch (error) {
+    console.error("Error clearing operation logs:", error);
+    showToast("error", "Error", "Failed to clear logs: " + error.message);
+  }
+}
+
+/**
+ * Render operation logs
+ */
+function renderOperationLogs() {
+  const container = document.getElementById("operations-log-list");
+
+  if (!container) {
+    return;
+  }
+
+  if (operationGroups.length === 0) {
+    container.innerHTML =
+      '<div class="operations-empty">No operations yet. Create or restore a backup to see progress logs.</div>';
+    return;
+  }
+
+  const operations = operationGroups.slice(0, 20);
+  container.innerHTML = operations
+    .map((operation) => {
+      const groupFilename = operation.filename ? ` - ${operation.filename}` : "";
+      const steps = (operation.steps || [])
+        .map((log) => {
+          const details = log.details ? ` (${log.details})` : "";
+          return `
+          <div class="operation-line status-${log.status || "info"}">
+            <span class="operation-line-time">${dayjs(log.timestamp).format("HH:mm:ss")}</span>
+            <span class="operation-line-status">${formatOperationStatus(log.status)}</span>
+            <span class="operation-line-text">${log.step}${details}</span>
+          </div>
+        `;
+        })
+        .join("");
+
+      return `
+        <div class="operation-item-card">
+          <div class="operation-compact-header">
+            <span class="operation-type">${formatOperationType(operation.type)}</span>
+            <span class="operation-status operation-status-chip ${formatOperationStatusClass(operation.latestStatus)}">${formatOperationStatus(operation.latestStatus)}</span>
+            <span class="operation-time">${dayjs(operation.latestTimestamp).fromNow()}</span>
+          </div>
+          <div class="operation-compact-title">${operation.latestStep}${groupFilename}</div>
+          <div class="operation-compact-list">${steps}</div>
+        </div>
+      `;
+    })
+    .join("");
 }
 
 /**
@@ -282,11 +388,55 @@ async function createBackup() {
 
     showToast("success", "Success", data.message);
     await loadBackups();
+    await loadOperationLogs();
   } catch (error) {
     console.error("Error creating backup:", error);
     showToast("error", "Error", "Failed to create backup: " + error.message);
   } finally {
+    await loadOperationLogs();
     button.disabled = false;
+  }
+}
+
+/**
+ * Upload backup file (.sql or .dump)
+ */
+async function uploadBackupFile(file) {
+  if (!file) {
+    return;
+  }
+
+  const lowerName = file.name.toLowerCase();
+  if (!lowerName.endsWith(".sql") && !lowerName.endsWith(".dump")) {
+    showToast("error", "Error", "Only .sql and .dump files are allowed");
+    return;
+  }
+
+  showLoading();
+
+  try {
+    const formData = new FormData();
+    formData.append("backupFile", file);
+
+    const response = await fetch("/api/backups/upload", {
+      method: "POST",
+      body: formData,
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || "Upload failed");
+    }
+
+    showToast("success", "Success", data.message);
+    await loadBackups();
+    await loadOperationLogs();
+  } catch (error) {
+    console.error("Error uploading backup file:", error);
+    showToast("error", "Error", "Failed to upload backup file: " + error.message);
+  } finally {
+    await loadOperationLogs();
+    hideLoading();
   }
 }
 
@@ -707,10 +857,12 @@ async function restoreBackup(filename) {
     });
 
     showToast("success", "Success", data.message);
+    await loadOperationLogs();
   } catch (error) {
     console.error("Error restoring backup:", error);
     showToast("error", "Error", "Failed to restore backup: " + error.message);
   } finally {
+    await loadOperationLogs();
     hideLoading();
   }
 }
@@ -819,12 +971,29 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   loadBackups();
+  loadOperationLogs();
   loadSchedulerStatus();
   loadConfigMode();
 
   document.getElementById("btn-create").addEventListener("click", createBackup);
+  const uploadButton = document.getElementById("btn-upload");
+  const backupFileInput = document.getElementById("backup-file-input");
+  uploadButton.addEventListener("click", () => {
+    backupFileInput.click();
+  });
+  backupFileInput.addEventListener("change", async (e) => {
+    const [file] = e.target.files || [];
+    await uploadBackupFile(file);
+    e.target.value = "";
+  });
 
   document.getElementById("btn-refresh").addEventListener("click", loadBackups);
+  document
+    .getElementById("btn-refresh-logs")
+    .addEventListener("click", loadOperationLogs);
+  document
+    .getElementById("btn-clear-logs")
+    .addEventListener("click", clearOperationLogs);
 
   document
     .getElementById("btn-config")
@@ -903,9 +1072,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Auto-polling removed - use manual refresh button or refresh after actions
-  // setInterval(loadBackups, 70500);
-  // setInterval(loadSchedulerStatus, 10000);
+  // Operation logs are refreshed on-demand and after operation completion.
 });
 
 window.downloadBackup = downloadBackup;
