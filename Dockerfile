@@ -34,20 +34,22 @@ COPY --chown=nodejs:nodejs . .
 
 # Create required directories with proper ownership
 RUN mkdir -p /app/backups /app/logs && \
+    chmod +x /app/docker-healthcheck.sh && \
     chown -R nodejs:nodejs /app
 
 # Switch to non-root user
 USER nodejs
 
+# Environment variables (defaults, can be overridden at runtime)
+ENV NODE_ENV=production
+ENV PORT=7050
+
 # Expose port
 EXPOSE 7050
 
-# Environment variables (defaults, can be overridden)
-ENV NODE_ENV=production
-
-# Health check
+# Health check via script so runtime PORT is expanded by the shell
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD curl -f http://localhost:7050/health || exit 1
+  CMD ["/app/docker-healthcheck.sh"]
 
 # Start application
 CMD ["node", "server.js"]
